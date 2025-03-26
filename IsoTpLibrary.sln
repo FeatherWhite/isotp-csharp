@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.11.35312.102
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IsoTpLibrary", "IsoTpLibrary\IsoTpLibrary.csproj", "{00B07BED-948C-47D3-BF10-6C1992852BAB}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IsoTpLibraryTests", "IsoTpLibraryTests\IsoTpLibraryTests.csproj", "{ED314A84-5446-4F35-85F0-922D7BB3294E}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{00B07BED-948C-47D3-BF10-6C1992852BAB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{00B07BED-948C-47D3-BF10-6C1992852BAB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{00B07BED-948C-47D3-BF10-6C1992852BAB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{00B07BED-948C-47D3-BF10-6C1992852BAB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{ED314A84-5446-4F35-85F0-922D7BB3294E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ED314A84-5446-4F35-85F0-922D7BB3294E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ED314A84-5446-4F35-85F0-922D7BB3294E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ED314A84-5446-4F35-85F0-922D7BB3294E}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {A721823E-CABF-4966-8424-F140C2CE1E58}
+	EndGlobalSection
+EndGlobal
