@@ -15,7 +15,7 @@ namespace IsoTpLibrary
 
         private bool IsoTpTimeAfter(uint a, uint b)
         {
-            return ((int)b - (int)a) < 0;
+            return b < a;
         }
         /* st_min to microsecond */
         private byte isotp_ms_to_st_min(byte ms)
@@ -216,10 +216,10 @@ namespace IsoTpLibrary
 
         public IsoTpReturnCode IsoTpSend(byte[] payload, ushort size)
         {
-            return IsoTpSendWithId(link.SendArbitrationId, payload, size);
+            return SendWithId(link.SendArbitrationId, payload, size);
         }
 
-        public IsoTpReturnCode IsoTpSendWithId(uint id, byte[] payload, ushort size)
+        public IsoTpReturnCode SendWithId(uint id, byte[] payload, ushort size)
         {
             IsoTpReturnCode ret;
             if(link == null)
