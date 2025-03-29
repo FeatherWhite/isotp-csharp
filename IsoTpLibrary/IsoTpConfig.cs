@@ -13,7 +13,7 @@ namespace IsoTpLibrary
 
         // The STmin parameter value specifies the minimum time gap allowed between
         // the transmission of consecutive frame network protocol data units
-        public const int DefaultStMin = 0;
+        public const int DefaultStMin = 14;
 
         // This parameter indicates how many FC N_PDU WTs can be transmitted by the
         // receiver in a row.

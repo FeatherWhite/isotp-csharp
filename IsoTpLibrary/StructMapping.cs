@@ -24,14 +24,11 @@ namespace IsoTpLibrary
     {
         public static T BytesToStruct<T>(byte[] data) where T : struct
         {
-            if (data.Length != 8)
-            {
-                throw new ArgumentException("Data array must be exactly 8 bytes long.");
-            }
 
             T result = new T();
             Type type = typeof(T);
             FieldInfo[] fields = type.GetFields(BindingFlags.Public | BindingFlags.Instance);
+            object obj = result;
             int byteIndex = 0;
             foreach (var field in fields)
             {
@@ -44,24 +41,24 @@ namespace IsoTpLibrary
 
                     // Extract the bits from the byte array
                     byte value = (byte)((data[byteIndex] >> bitOffset) & ((1 << bitLength) - 1));
-                    field.SetValue(result, value);
+                    field.SetValue(obj, value);
                 }
                 else
                 {
                     if(field.FieldType == typeof(byte))
                     {
-                        field.SetValue(result, data[byteIndex]);
+                        field.SetValue(obj, data[byteIndex]);
                     }
                     if(field.FieldType == typeof(byte[]))
                     {
-                        byte[] values = (byte[])field.GetValue(result);
+                        byte[] values = new byte[data.Length - byteIndex];
                         if(values != null)
                         {
                             for (int i = 0; i < values.Length; i++)
                             {
                                 values[i] = data[byteIndex++];
                             }
-                            field.SetValue(result, values);
+                            field.SetValue(obj, values);
                         }
                         byteIndex--;
                     }
@@ -69,7 +66,7 @@ namespace IsoTpLibrary
                 byteIndex++;
             }
 
-            return result;
+            return (T)obj;
         }
 
         public static byte[] StructToBytes<T>(T obj) where T : struct

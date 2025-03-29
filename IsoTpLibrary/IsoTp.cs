@@ -115,12 +115,12 @@ namespace IsoTpLibrary
             consecutiveFrame.Type = (byte)IsoTpPCIType.CONSECUTIVE_FRAME;
             consecutiveFrame.SN = link.SendSn;
             dataLength = Convert.ToUInt16(link.SendSize - link.SendOffset);
+            consecutiveFrame.Data = new byte[7];
 
             if (dataLength > consecutiveFrame.Data.Length) {
                 dataLength = Convert.ToUInt16(consecutiveFrame.Data.Length);
             }
 
-            consecutiveFrame.Data = new byte[7];
             Array.Copy(link.SendBuffer,link.SendOffset, consecutiveFrame.Data,0 ,dataLength);
             data.Elems = StructMapping.StructToBytes(consecutiveFrame);
 
@@ -146,7 +146,7 @@ namespace IsoTpLibrary
                 //isotp_user_debug("Single-frame length too small.");
                 return IsoTpReturnCode.LENGTH;
             }
-            Array.Copy(link.ReceiveBuffer, singleFrame.Data, singleFrame.SF_DL);
+            Array.Copy(singleFrame.Data, link.ReceiveBuffer,  singleFrame.SF_DL);
             link.ReceiveSize = singleFrame.SF_DL;
             return IsoTpReturnCode.OK;
         }
@@ -171,7 +171,7 @@ namespace IsoTpLibrary
                 //isotp_user_debug("Multi-frame response too large for receiving buffer.");
                 return IsoTpReturnCode.OVERFLOW;
             }
-            Array.Copy(link.ReceiveBuffer, firstFrame.Data, firstFrame.Data.Length);
+            Array.Copy(firstFrame.Data, link.ReceiveBuffer,  firstFrame.Data.Length);
             link.ReceiveSize = payloadLength;
             link.ReceiveOffset = Convert.ToUInt16(firstFrame.Data.Length);
             link.ReceiveSn = 1;
@@ -195,7 +195,7 @@ namespace IsoTpLibrary
                 //isotp_user_debug("Consecutive frame too short.");
                 return IsoTpReturnCode.LENGTH;
             }
-            Array.Copy(link.ReceiveBuffer,link.ReceiveOffset ,consecutiveFrame.Data, 0,remainingBytes);
+            Array.Copy(consecutiveFrame.Data, 0, link.ReceiveBuffer,link.ReceiveOffset ,remainingBytes);
             link.ReceiveOffset += remainingBytes;
             if(++(link.ReceiveSn) > 0x0F)
             {
@@ -214,7 +214,7 @@ namespace IsoTpLibrary
             return IsoTpReturnCode.OK;
         }
 
-        public IsoTpReturnCode IsoTpSend(byte[] payload, ushort size)
+        public IsoTpReturnCode Send(byte[] payload, ushort size)
         {
             return SendWithId(link.SendArbitrationId, payload, size);
         }
@@ -263,7 +263,7 @@ namespace IsoTpLibrary
             return ret;
         }
 
-        public void IsoTpOnCanMessage(byte[] data,byte len)
+        public void OnCanMessage(byte[] data,byte len)
         {
             IsoTpPciType pciType;
             IsoTpDataArray dataArray;
@@ -395,7 +395,7 @@ namespace IsoTpLibrary
             }
         }
 
-        public IsoTpReturnCode IsoTpReceive(byte[] payload,ushort payloadSize,ref ushort outSize)
+        public IsoTpReturnCode Receive(byte[] payload,ushort payloadSize,ref ushort outSize)
         {
             ushort copylen;
             if(link.ReceiveStatus == IsoTpReceiveStatus.Full)
@@ -413,7 +413,7 @@ namespace IsoTpLibrary
             return IsoTpReturnCode.OK;
         }
 
-        public void IsoTpInitLink(uint sendId, byte[] sendbuf,ushort sendbufSize, byte[] recvbuf,ushort recvbufSize)
+        public void InitLink(uint sendId, byte[] sendbuf,ushort sendbufSize, byte[] recvbuf,ushort recvbufSize)
         {
             link.SendArbitrationId = sendId;
             link.SendBuffer = sendbuf;
@@ -441,7 +441,7 @@ namespace IsoTpLibrary
             link.ReceiveProtocolResult = IsoTpProtocolResult.OK;
         }
 
-        public void IsoTpPoll()
+        public void Poll()
         {
             IsoTpReturnCode ret;
             if(link.SendStatus == IsoTpSendStatus.InProgress)
@@ -491,7 +491,7 @@ namespace IsoTpLibrary
         }
         private bool SendCan(uint arbitrationId, byte[] elems)
         {
-            Console.WriteLine($"CanId:{arbitrationId.ToString("X2")}" +
+            Console.WriteLine($"{DateTime.Now.ToString("HH-mm-ss.fff")} CanId:{arbitrationId.ToString("X2")}" +
                 $" 发送:{string.Join(" ",elems.Select(b => b.ToString("X2")))}");
             return true;
         }

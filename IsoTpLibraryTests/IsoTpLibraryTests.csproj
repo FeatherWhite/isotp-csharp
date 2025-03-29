@@ -64,7 +64,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\IsoTpLibrary\IsoTpLibrary.csproj">
-      <Project>{00B07BED-948C-47D3-BF10-6C1992852BAB}</Project>
+      <Project>{00b07bed-948c-47d3-bf10-6c1992852bab}</Project>
       <Name>IsoTpLibrary</Name>
     </ProjectReference>
   </ItemGroup>

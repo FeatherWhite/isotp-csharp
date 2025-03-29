@@ -14,10 +14,10 @@ namespace IsoTpLibrary.Tests
         IsoTp isoTp;
         public IsoTpTests()
         {
-            byte[] sendbuf = new byte[4096];
-            byte[] receivebuf = new byte[4096];
+            byte[] sendbuf = new byte[255];
+            byte[] receivebuf = new byte[255];
             isoTp = new IsoTp();
-            isoTp.IsoTpInitLink(0x710, sendbuf, 4096, receivebuf, 4096);
+            isoTp.InitLink(0x710, sendbuf, 255, receivebuf, 255);
         }
 
         [TestMethod()]
@@ -32,7 +32,7 @@ namespace IsoTpLibrary.Tests
         }
 
         [TestMethod()]
-        public void TestIsoTpSendWithId()
+        public void TestIsoTpSend()
         {
             byte[] payload = new byte[17]
             {
@@ -40,15 +40,41 @@ namespace IsoTpLibrary.Tests
                 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 
                 0x11
             };
-            isoTp.SendWithId(0x7df,payload,(byte)payload.Length);
-            isoTp.IsoTpOnCanMessage(new byte[8] { 0x30, 0x0f, 0x03,0x00, 0x00, 0x00, 0x00, 0x00}, 8);
+            isoTp.Send(payload,(byte)payload.Length);
+            isoTp.OnCanMessage(new byte[8] { 0x30, 0x0f, 0x14,0x00, 0x00, 0x00, 0x00, 0x00}, 8);
             while (true)
             {
-                isoTp.IsoTpPoll();
-                if(isoTp.link.SendStatus == IsoTpSendStatus.Idle || isoTp.link.SendStatus == IsoTpSendStatus.Error)
+                isoTp.Poll();
+                if(isoTp.link.SendStatus == IsoTpSendStatus.Idle 
+                    || isoTp.link.SendStatus == IsoTpSendStatus.Error)
                 {
                     break;
                 }
+            }
+        }
+
+        [TestMethod()]
+        public void TestIsoTpReceive()
+        {
+            isoTp.OnCanMessage(new byte[] { 0x10, 0x11, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 }, 8);
+            isoTp.Poll();
+            isoTp.OnCanMessage(new byte[] { 0x21, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d },8);
+            isoTp.Poll();
+            isoTp.OnCanMessage(new byte[] { 0x22, 0x0E, 0x0F, 0x10, 0x11, 0x00, 0x00, 0x00 }, 8);
+            isoTp.Poll();
+            if(isoTp.link.ReceiveStatus == IsoTpReceiveStatus.Full)
+            {
+                Console.WriteLine($"时间{DateTime.Now.ToString("HH-mm-ss.fff")}\n接收数据{BitConverter.ToString(isoTp.link.ReceiveBuffer)}");
+            }
+            isoTp.OnCanMessage(new byte[] { 0x10, 0x11, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 }, 8);
+            isoTp.Poll();
+            isoTp.OnCanMessage(new byte[] { 0x21, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d }, 8);
+            isoTp.Poll();
+            isoTp.OnCanMessage(new byte[] { 0x22, 0x0E, 0x0F, 0x10, 0x11, 0x00, 0x00, 0x00 }, 8);
+            isoTp.Poll();
+            if (isoTp.link.ReceiveStatus == IsoTpReceiveStatus.Full)
+            {
+                Console.WriteLine($"时间{DateTime.Now.ToString("HH-mm-ss.fff")}\n接收数据{BitConverter.ToString(isoTp.link.ReceiveBuffer)}");
             }
         }
 
@@ -73,7 +99,7 @@ namespace IsoTpLibrary.Tests
         public void IsoTpSendSingleFrameTest()
         {
             IsoTp isoTp = new IsoTp();
-            isoTp.link.SendBuffer = new byte[7] { 1,2,3,4,5,6,7 };
+            isoTp.link.SendBuffer = new byte[7] { 1, 2, 3, 4, 5, 6, 7 };
             isoTp.link.SendSize = 7;
             isoTp.SendSingleFrame(0x1835461D);
         }
