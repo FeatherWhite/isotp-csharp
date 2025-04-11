@@ -5,7 +5,7 @@
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
     <ProjectGuid>{00B07BED-948C-47D3-BF10-6C1992852BAB}</ProjectGuid>
-    <OutputType>Exe</OutputType>
+    <OutputType>Library</OutputType>
     <LangVersion>12</LangVersion>
     <RootNamespace>IsoTpLibrary</RootNamespace>
     <AssemblyName>IsoTpLibrary</AssemblyName>
@@ -34,6 +34,9 @@
     <LangVersion>12</LangVersion>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup>
+    <StartupObject />
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System" />
