@@ -41,6 +41,7 @@ namespace IsoTpLibrary.Tests
                 0x11
             };
             isoTp.Send(payload,(byte)payload.Length);
+            //从ECU中接收到的数据
             isoTp.OnCanMessage(new byte[8] { 0x30, 0x0f, 0x14,0x00, 0x00, 0x00, 0x00, 0x00}, 8);
             while (true)
             {
