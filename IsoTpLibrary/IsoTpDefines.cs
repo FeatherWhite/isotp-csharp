@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 
 namespace IsoTpLibrary
 {
-    public enum IsoTpReturnCode
+    public enum IsoTpReturnCode : int
     {
         OK = 0,
         ERROR = -1,
