@@ -230,8 +230,7 @@ namespace IsoTpLibrary
             if(size > link.SendBufSize)
             {
                 //isotp_user_debug("Message size too large. Increase ISO_TP_MAX_MESSAGE_SIZE to set a larger buffer\n");
-                char[] message = new char[128];
-                Console.WriteLine($"{message[0]} Attempted to send {size} bytes; max size is {link.SendBufSize}!\n");
+                Console.WriteLine($"Attempted to send {size} bytes; max size is {link.SendBufSize}!\n");
                 return IsoTpReturnCode.OVERFLOW;
             }
             if(link.SendStatus == IsoTpSendStatus.InProgress)
@@ -407,6 +406,7 @@ namespace IsoTpLibrary
             {
                 copylen = payloadSize;
             }
+            link.ReceiveBuffer = new byte[link.ReceiveSize];
             Array.Copy(link.ReceiveBuffer, payload, copylen);
             outSize = copylen;
             link.ReceiveStatus = IsoTpReceiveStatus.Idle;
