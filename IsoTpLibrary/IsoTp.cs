@@ -403,7 +403,7 @@ namespace IsoTpLibrary
         public IsoTpReturnCode Receive(byte[] payload,ushort payloadSize,ref ushort outSize)
         {
             ushort copylen;
-            if(link.ReceiveStatus == IsoTpReceiveStatus.Full)
+            if(link.ReceiveStatus != IsoTpReceiveStatus.Full)
             {
                 return IsoTpReturnCode.NO_DATA;
             }
