@@ -9,11 +9,13 @@ namespace IsoTpLibrary
     public static class IsoTpConfig
     {
         // Max number of messages the receiver can receive at one time
-        public const int DefaultBlockSize = 8;
+        //public const int DefaultBlockSize = 8;
+        public const int DefaultBlockSize = 0;
 
         // The STmin parameter value specifies the minimum time gap allowed between
         // the transmission of consecutive frame network protocol data units
-        public const int DefaultStMin = 14;
+        //public const int DefaultStMin = 14;
+        public const int DefaultStMin = 0;
 
         // This parameter indicates how many FC N_PDU WTs can be transmitted by the
         // receiver in a row.
