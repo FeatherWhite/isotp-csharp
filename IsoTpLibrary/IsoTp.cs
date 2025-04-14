@@ -4,14 +4,20 @@ using System.Linq;
 using System.Reflection.Emit;
 using System.Text;
 using System.Threading.Tasks;
+using ZLG.CAN;
 
 namespace IsoTpLibrary
 {
     public class IsoTp
     {
         public IsoTpLink link { get; set; } = new IsoTpLink();
-
+        public USBCanIICommunication can { get; set; }
         private const ushort InvalidBs = 0xFFFF;
+        /// <summary>
+        /// ZLG Can Channel Index
+        /// </summary>
+        public uint Channel { get; set; } = 0;
+
 
         private bool IsoTpTimeAfter(uint a, uint b)
         {
@@ -143,7 +149,7 @@ namespace IsoTpLibrary
         {
             if((singleFrame.SF_DL == 0) || (singleFrame.SF_DL > len - 1))
             {
-                //isotp_user_debug("Single-frame length too small.");
+                Console.WriteLine("Single-frame length too small.");
                 return IsoTpReturnCode.LENGTH;
             }
             Array.Copy(singleFrame.Data, link.ReceiveBuffer,  singleFrame.SF_DL);
@@ -156,19 +162,19 @@ namespace IsoTpLibrary
             ushort payloadLength;
             if(len != 8)
             {
-                //isotp_user_debug("First frame should be 8 bytes in length.");
+                Console.WriteLine("First frame should be 8 bytes in length.");
                 return IsoTpReturnCode.LENGTH;
             }
             payloadLength = firstFrame.FF_DL_high;
             payloadLength = Convert.ToUInt16((payloadLength << 8) + firstFrame.FF_DL_low);
             if(payloadLength <= 7)
             {
-                //isotp_user_debug("Should not use multiple frame transmission.");
+                Console.WriteLine("Should not use multiple frame transmission.");
                 return IsoTpReturnCode.LENGTH;
             }
             if (payloadLength > link.ReceiveBufSize)
             {
-                //isotp_user_debug("Multi-frame response too large for receiving buffer.");
+                Console.WriteLine("Multi-frame response too large for receiving buffer.");
                 return IsoTpReturnCode.OVERFLOW;
             }
             Array.Copy(firstFrame.Data, link.ReceiveBuffer,  firstFrame.Data.Length);
@@ -192,7 +198,7 @@ namespace IsoTpLibrary
             }
             if(remainingBytes > len - 1)
             {
-                //isotp_user_debug("Consecutive frame too short.");
+                Console.WriteLine("Consecutive frame too short.");
                 return IsoTpReturnCode.LENGTH;
             }
             Array.Copy(consecutiveFrame.Data, 0, link.ReceiveBuffer,link.ReceiveOffset ,remainingBytes);
@@ -208,7 +214,7 @@ namespace IsoTpLibrary
         {
             if(len < 3)
             {
-                //isotp_user_debug("Flow control frame too short.");
+                Console.WriteLine("Flow control frame too short.");
                 return IsoTpReturnCode.LENGTH;
             }
             return IsoTpReturnCode.OK;
@@ -224,18 +230,18 @@ namespace IsoTpLibrary
             IsoTpReturnCode ret;
             if(link == null)
             {
-                //isotp_user_debug("Link is null!");
+                Console.WriteLine("Link is null!");
                 return IsoTpReturnCode.ERROR;
             }
             if(size > link.SendBufSize)
             {
-                //isotp_user_debug("Message size too large. Increase ISO_TP_MAX_MESSAGE_SIZE to set a larger buffer\n");
+                Console.WriteLine("Message size too large. Increase ISO_TP_MAX_MESSAGE_SIZE to set a larger buffer");
                 Console.WriteLine($"Attempted to send {size} bytes; max size is {link.SendBufSize}!\n");
                 return IsoTpReturnCode.OVERFLOW;
             }
             if(link.SendStatus == IsoTpSendStatus.InProgress)
             {
-                //isotp_user_debug("Abort previous message, transmission in progress.\n");
+                Console.WriteLine("Abort previous message, transmission in progress.");
                 return IsoTpReturnCode.INPROGRESS;
             }
             link.SendSize = size;
@@ -406,7 +412,6 @@ namespace IsoTpLibrary
             {
                 copylen = payloadSize;
             }
-            link.ReceiveBuffer = new byte[link.ReceiveSize];
             Array.Copy(link.ReceiveBuffer, payload, copylen);
             outSize = copylen;
             link.ReceiveStatus = IsoTpReceiveStatus.Idle;
@@ -491,8 +496,17 @@ namespace IsoTpLibrary
         }
         private bool SendCan(uint arbitrationId, byte[] elems)
         {
-            Console.WriteLine($"{DateTime.Now.ToString("HH-mm-ss.fff")} CanId:{arbitrationId.ToString("X2")}" +
-                $" 发送:{string.Join(" ",elems.Select(b => b.ToString("X2")))}");
+            bool isSuccess = can.Send(arbitrationId, Channel, elems);
+            if (isSuccess)
+            {
+                Console.WriteLine($"{DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff")} " +
+                    $"CanId:{arbitrationId.ToString("X")}发送:{BitConverter.ToString(elems)}");
+            }
+            else
+            {
+                Console.WriteLine($"{DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff")} "
+                    + $"CanId:{arbitrationId}发送失败");
+            }
             return true;
         }
     }
