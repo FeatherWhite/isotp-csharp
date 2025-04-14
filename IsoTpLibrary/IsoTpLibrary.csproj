@@ -59,5 +59,11 @@
   <ItemGroup>
     <None Include="App.config" />
   </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\ZLGCAN\ZLG.CAN\ZLG.CAN.csproj">
+      <Project>{5773bcca-ef8f-4a9e-993f-5c38d456b2ca}</Project>
+      <Name>ZLG.CAN</Name>
+    </ProjectReference>
+  </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
