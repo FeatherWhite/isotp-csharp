@@ -11,7 +11,8 @@ namespace IsoTpLibrary
     public class IsoTp
     {
         public IsoTpLink link { get; set; } = new IsoTpLink();
-        public USBCanIICommunication can { get; set; }
+        public delegate bool SendCanFunc(uint arbitrationId,uint channel ,byte[] elems);
+        public SendCanFunc SendCan;
         private const ushort InvalidBs = 0xFFFF;
         /// <summary>
         /// ZLG Can Channel Index
@@ -71,7 +72,7 @@ namespace IsoTpLibrary
             flowControl.STmin = isotp_ms_to_st_min(st_min_ms);
             flowControl.Reserve = new byte[5];
             data.Elems = StructMapping.StructToBytes(flowControl);
-            var isSend = SendCan(link.SendArbitrationId, data.Elems);
+            var isSend = SendCan(link.SendArbitrationId,Channel ,data.Elems);
             return isSend ? IsoTpReturnCode.OK : IsoTpReturnCode.ERROR;
         }
 
@@ -85,7 +86,7 @@ namespace IsoTpLibrary
             singleFrame.Data = new byte[7];
             Array.Copy(link.SendBuffer, singleFrame.Data, link.SendSize);
             data.Elems = StructMapping.StructToBytes(singleFrame);
-            var isSend = SendCan(id, data.Elems);
+            var isSend = SendCan(id,Channel ,data.Elems);
             return isSend ? IsoTpReturnCode.OK : IsoTpReturnCode.ERROR;
         }
 
@@ -101,7 +102,7 @@ namespace IsoTpLibrary
             firstFrame.Data = new byte[6];
             Array.Copy(link.SendBuffer, firstFrame.Data, firstFrame.Data.Length);
             data.Elems = StructMapping.StructToBytes(firstFrame);
-            bool isSend = SendCan(id, data.Elems);
+            bool isSend = SendCan(id,Channel, data.Elems);
 
             if (isSend == true)
             {
@@ -132,7 +133,7 @@ namespace IsoTpLibrary
 
 
             /* send message */
-            bool isSend = SendCan(link.SendArbitrationId,data.Elems);
+            bool isSend = SendCan(link.SendArbitrationId,Channel, data.Elems);
 
             if (isSend == true)
             {
@@ -494,21 +495,21 @@ namespace IsoTpLibrary
         {
             return (uint)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() % uint.MaxValue);
         }
-        private bool SendCan(uint arbitrationId, byte[] elems)
-        {
-            bool isSuccess = can.Send(arbitrationId, Channel, elems);
-            if (isSuccess)
-            {
-                Console.WriteLine($"{DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff")} " +
-                    $"CanId:{arbitrationId.ToString("X")}发送:{BitConverter.ToString(elems)}");
-            }
-            else
-            {
-                Console.WriteLine($"{DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff")} "
-                    + $"CanId:{arbitrationId}发送失败");
-            }
-            return true;
-        }
+        //private bool SendCan(uint arbitrationId, byte[] elems)
+        //{
+        //    bool isSuccess = can.Send(arbitrationId, Channel, elems);
+        //    if (isSuccess)
+        //    {
+        //        Console.WriteLine($"{DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff")} " +
+        //            $"CanId:{arbitrationId.ToString("X")}发送:{BitConverter.ToString(elems)}");
+        //    }
+        //    else
+        //    {
+        //        Console.WriteLine($"{DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff")} "
+        //            + $"CanId:{arbitrationId}发送失败");
+        //    }
+        //    return isSuccess;
+        //}
     }
 
     public class IsoTpLink
