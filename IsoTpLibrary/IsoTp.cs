@@ -11,7 +11,7 @@ namespace IsoTpLibrary
     public class IsoTp
     {
         public IsoTpLink link { get; set; } = new IsoTpLink();
-        public delegate bool SendCanFunc(uint arbitrationId,uint channel ,byte[] elems);
+        public delegate bool SendCanFunc(uint arbitrationId,uint channel ,byte[] payload);
         public SendCanFunc SendCan;
         private const ushort InvalidBs = 0xFFFF;
         /// <summary>
