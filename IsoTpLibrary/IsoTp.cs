@@ -274,18 +274,33 @@ namespace IsoTpLibrary
             IsoTpPciType pciType;
             IsoTpDataArray dataArray;
             IsoTpReturnCode ret;
-            if(len < 2 || len > 8)
+            if(len < 2 || len > 64)
             {
                 return;
             }
             pciType = StructMapping.BytesToStruct<IsoTpPciType>(data);
-            dataArray.Elems = new byte[8];
+            dataArray.Elems = new byte[len];
             Array.Copy(data, dataArray.Elems, len);
             switch (pciType.Type)
             {
                 case (byte)IsoTpPCIType.SINGLE:
-                    IsoTpSingleFrame singleFrame = StructMapping.BytesToStruct<IsoTpSingleFrame>(dataArray.Elems);
-                    if(link.ReceiveStatus == IsoTpReceiveStatus.InProgress)
+                    IsoTpSingleFrame singleFrame = new IsoTpSingleFrame();
+                    int dl = dataArray.Elems[0] & 0x0F;
+                    #region 长度大于8
+                    if (dl == 0)
+                    {
+                        singleFrame.SF_DL = dataArray.Elems[1];
+                        singleFrame.Data = new byte[singleFrame.SF_DL];
+                        Array.Copy(dataArray.Elems, 2, singleFrame.Data, 0, singleFrame.SF_DL);
+                    }
+                    #endregion
+
+                    #region 长度为8
+                    else
+                    {
+                        singleFrame = StructMapping.BytesToStruct<IsoTpSingleFrame>(dataArray.Elems);
+                    }
+                    if (link.ReceiveStatus == IsoTpReceiveStatus.InProgress)
                     {
                         link.ReceiveProtocolResult = IsoTpProtocolResult.UNEXP_PDU;
                     }
@@ -294,11 +309,12 @@ namespace IsoTpLibrary
                         link.ReceiveProtocolResult = IsoTpProtocolResult.OK;
                     }
                     ret = ReceiveSingleFrame(singleFrame, len);
-                    if(ret == IsoTpReturnCode.OK)
+                    if (ret == IsoTpReturnCode.OK)
                     {
                         link.ReceiveStatus = IsoTpReceiveStatus.Full;
-                    }
-                break;
+                    } 
+                    #endregion
+                    break;
                 case (byte)IsoTpPCIType.FIRST_FRAME:
                     IsoTpFirstFrame firstFrame = StructMapping.BytesToStruct<IsoTpFirstFrame>(dataArray.Elems);
                     if(link.ReceiveStatus == IsoTpReceiveStatus.InProgress)
