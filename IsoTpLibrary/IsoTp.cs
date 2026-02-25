@@ -161,7 +161,7 @@ namespace IsoTpLibrary
         public IsoTpReturnCode ReceiveFirstFrame(IsoTpFirstFrame firstFrame, byte len)
         {
             ushort payloadLength;
-            if(len != 8)
+            if(len != 8 && len != 12 && len != 16 && len != 20 && len != 24 && len != 32 && len != 48 && len != 64)
             {
                 Console.WriteLine("First frame should be 8 bytes in length.");
                 return IsoTpReturnCode.LENGTH;
@@ -317,7 +317,15 @@ namespace IsoTpLibrary
                     break;
                 case (byte)IsoTpPCIType.FIRST_FRAME:
                     IsoTpFirstFrame firstFrame = StructMapping.BytesToStruct<IsoTpFirstFrame>(dataArray.Elems);
-                    if(link.ReceiveStatus == IsoTpReceiveStatus.InProgress)
+                    #region 单帧长度大于8
+                    if (len > 8 && len <= 64)
+                    {
+                        int payloadLength = len - 2;
+                        firstFrame.Data = new byte[payloadLength];
+                        Array.Copy(dataArray.Elems, 2, firstFrame.Data, 0, payloadLength);
+                    }
+                    #endregion
+                    if (link.ReceiveStatus == IsoTpReceiveStatus.InProgress)
                     {
                         link.ReceiveProtocolResult = IsoTpProtocolResult.UNEXP_PDU;
                     }
@@ -344,7 +352,17 @@ namespace IsoTpLibrary
 
                 case (byte)IsoTpPCIType.CONSECUTIVE_FRAME:
                     IsoTpConsecutiveFrame consecutiveFrame = StructMapping.BytesToStruct<IsoTpConsecutiveFrame>(dataArray.Elems);
-                    if(link.ReceiveStatus != IsoTpReceiveStatus.InProgress)
+                    #region 单帧长度大于8
+                    if (len > 8 && len <= 64)
+                    {
+                        consecutiveFrame = StructMapping.BytesToStruct<IsoTpConsecutiveFrame>(dataArray.Elems);
+                        int payloadLength = len - 1;
+                        consecutiveFrame.Data = new byte[payloadLength];
+                        Array.Copy(dataArray.Elems, 1, consecutiveFrame.Data, 0, payloadLength);
+                    }
+                    #endregion
+
+                    if (link.ReceiveStatus != IsoTpReceiveStatus.InProgress)
                     {
                         link.ReceiveProtocolResult = IsoTpProtocolResult.UNEXP_PDU;
                         break;
