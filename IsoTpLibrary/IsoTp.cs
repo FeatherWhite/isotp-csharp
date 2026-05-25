@@ -11,102 +11,138 @@ namespace IsoTpLibrary
     public class IsoTp
     {
         public IsoTpLink link { get; set; } = new IsoTpLink();
-        public delegate bool SendCanFunc(uint arbitrationId,uint channel ,byte[] payload);
+        public delegate bool SendCanFunc(uint arbitrationId, uint channel, byte[] payload);
         public SendCanFunc SendCan;
         private const ushort InvalidBs = 0xFFFF;
+
         /// <summary>
         /// ZLG Can Channel Index
         /// </summary>
         public uint Channel { get; set; } = 0;
 
+        private bool IsoTpTimeAfter(uint a, uint b) => b < a;
 
-        private bool IsoTpTimeAfter(uint a, uint b)
-        {
-            return b < a;
-        }
-        /* st_min to microsecond */
-        private byte isotp_ms_to_st_min(byte ms)
-        {
-            byte st_min;
+        private byte isotp_ms_to_st_min(byte ms) => ms > 0x7F ? (byte)0x7F : ms;
 
-            st_min = ms;
-            if (st_min > 0x7F)
-            {
-                st_min = 0x7F;
-            }
-
-            return st_min;
-        }
-
-        /* st_min to msec  */
         private byte isotp_st_min_to_ms(byte st_min)
         {
-            byte ms;
-
-            if (st_min >= 0xF1 && st_min <= 0xF9)
-            {
-                ms = 1;
-            }
-            else if (st_min <= 0x7F)
-            {
-                ms = st_min;
-            }
-            else
-            {
-                ms = 0;
-            }
-
-            return ms;
+            if (st_min >= 0xF1 && st_min <= 0xF9) return 1;
+            if (st_min <= 0x7F) return st_min;
+            return 0;
         }
-        //public bool FramePadding { get; set; } = true;
+
+        /// <summary>
+        /// 将所需的有效载荷长度，映射为 CAN FD 硬件允许的离散 DLC 长度
+        /// </summary>
+        private int GetCanFdDlcLength(int requiredSize)
+        {
+            if (requiredSize <= 8) return 8;
+            if (requiredSize <= 12) return 12;
+            if (requiredSize <= 16) return 16;
+            if (requiredSize <= 20) return 20;
+            if (requiredSize <= 24) return 24;
+            if (requiredSize <= 32) return 32;
+            if (requiredSize <= 48) return 48;
+            return 64;
+        }
+
+        /// <summary>
+        /// 创建带有固定填充字节的数组
+        /// </summary>
+        private byte[] CreatePaddedBuffer(int length)
+        {
+            byte[] buf = new byte[length];
+            if (link.PaddingEnable)
+            {
+                for (int i = 0; i < length; i++) buf[i] = link.PaddingByte;
+            }
+            return buf;
+        }
+
         public IsoTpReturnCode SendFlowControl(IsoTpPCIFlowStatus flow_status, byte block_size, byte st_min_ms)
         {
+            // 流控帧长度随发送能力对齐
+            int frameLen = GetCanFdDlcLength(3);
+            byte[] txBuf = CreatePaddedBuffer(frameLen);
 
-            IsoTpFlowControlFrame flowControl = new IsoTpFlowControlFrame();
-            IsoTpDataArray data = new IsoTpDataArray();
+            txBuf[0] = (byte)(((byte)IsoTpPCIType.FLOW_CONTROL_FRAME << 4) | (byte)flow_status);
+            txBuf[1] = block_size;
+            txBuf[2] = isotp_ms_to_st_min(st_min_ms);
 
-            /* setup message  */
-            flowControl.Type = (byte)IsoTpPCIType.FLOW_CONTROL_FRAME;
-            flowControl.FS = (byte)flow_status;
-            flowControl.BS = block_size;
-            flowControl.STmin = isotp_ms_to_st_min(st_min_ms);
-            flowControl.Reserve = new byte[5];
-            data.Elems = StructMapping.StructToBytes(flowControl);
-            var isSend = SendCan(link.SendArbitrationId,Channel ,data.Elems);
+            var isSend = SendCan(link.SendArbitrationId, Channel, txBuf);
             return isSend ? IsoTpReturnCode.OK : IsoTpReturnCode.ERROR;
         }
 
         public IsoTpReturnCode SendSingleFrame(uint id)
         {
-            IsoTpSingleFrame singleFrame = new IsoTpSingleFrame();
-            IsoTpDataArray data = new IsoTpDataArray();
-            /* multi frame message length must greater than 7  */
-            singleFrame.Type = (byte)IsoTpPCIType.SINGLE;
-            singleFrame.SF_DL = (byte)link.SendSize;
-            singleFrame.Data = new byte[7];
-            Array.Copy(link.SendBuffer, singleFrame.Data, link.SendSize);
-            data.Elems = StructMapping.StructToBytes(singleFrame);
-            var isSend = SendCan(id,Channel ,data.Elems);
+            int pciLen = 1;
+            // 遵从 ISO 15765-2:2016 跳变规则：
+            // 如果允许的链路通道字节数 > 8 且 数据长度 >= 7，单帧必须使用 2 字节 PCI
+            if (link.TxDl > 8 && link.SendSize >= 7)
+            {
+                pciLen = 2;
+            }
+
+            int totalFrameLen = GetCanFdDlcLength(link.SendSize + pciLen);
+            // 防止超出当前配置通道的最大限制（大厂强校验）
+            if (totalFrameLen > link.TxDl) totalFrameLen = link.TxDl;
+
+            byte[] txBuf = CreatePaddedBuffer(totalFrameLen);
+
+            if (pciLen == 1)
+            {
+                txBuf[0] = (byte)(((byte)IsoTpPCIType.SINGLE << 4) | (link.SendSize & 0x0F));
+                Array.Copy(link.SendBuffer, 0, txBuf, 1, link.SendSize);
+            }
+            else // 2 字节 PCI
+            {
+                txBuf[0] = (byte)((byte)IsoTpPCIType.SINGLE << 4); // 高4位为0，低4位固定为0
+                txBuf[1] = (byte)link.SendSize;                  // 第二字节存放真实长度
+                Array.Copy(link.SendBuffer, 0, txBuf, 2, link.SendSize);
+            }
+
+            var isSend = SendCan(id, Channel, txBuf);
             return isSend ? IsoTpReturnCode.OK : IsoTpReturnCode.ERROR;
         }
 
         public IsoTpReturnCode SendFirstFrame(uint id)
         {
-            IsoTpFirstFrame firstFrame = new IsoTpFirstFrame();
-            IsoTpDataArray data = new IsoTpDataArray();
+            int pciLen = 2;
+            bool isEscapeFrame = false;
 
-            /* multi frame message length must greater than 7  */
-            firstFrame.Type = (byte)IsoTpPCIType.FIRST_FRAME;
-            firstFrame.FF_DL_low = (byte)link.SendSize;
-            firstFrame.FF_DL_high = (byte)(0x0F & (link.SendSize >> 8));
-            firstFrame.Data = new byte[6];
-            Array.Copy(link.SendBuffer, firstFrame.Data, firstFrame.Data.Length);
-            data.Elems = StructMapping.StructToBytes(firstFrame);
-            bool isSend = SendCan(id,Channel, data.Elems);
-
-            if (isSend == true)
+            // 如果长度超过了传统 12 位（4095字节）的限制，触发 4 字节大首帧（本处做常规 CAN FD 兼容）
+            if (link.SendSize > 4095)
             {
-                link.SendOffset += (ushort)firstFrame.Data.Length;
+                pciLen = 6;
+                isEscapeFrame = true;
+            }
+
+            // 首帧也需要填充对齐到离散 DLC 长度
+            int totalFrameLen = GetCanFdDlcLength(link.TxDl);
+            byte[] txBuf = CreatePaddedBuffer(totalFrameLen);
+
+            if (!isEscapeFrame)
+            {
+                txBuf[0] = (byte)(((byte)IsoTpPCIType.FIRST_FRAME << 4) | (byte)(0x0F & (link.SendSize >> 8)));
+                txBuf[1] = (byte)(link.SendSize & 0xFF);
+            }
+            else
+            {
+                txBuf[0] = (byte)((byte)IsoTpPCIType.FIRST_FRAME << 4); // 传统位填0
+                txBuf[1] = 0;
+                txBuf[2] = (byte)((link.SendSize >> 24) & 0xFF);
+                txBuf[3] = (byte)((link.SendSize >> 16) & 0xFF);
+                txBuf[4] = (byte)((link.SendSize >> 8) & 0xFF);
+                txBuf[5] = (byte)(link.SendSize & 0xFF);
+            }
+
+            int payloadDataLen = totalFrameLen - pciLen;
+            Array.Copy(link.SendBuffer, 0, txBuf, pciLen, payloadDataLen);
+
+            bool isSend = SendCan(id, Channel, txBuf);
+            if (isSend)
+            {
+                link.SendOffset = (ushort)payloadDataLen;
                 link.SendSn = 1;
             }
             return isSend ? IsoTpReturnCode.OK : IsoTpReturnCode.ERROR;
@@ -114,30 +150,37 @@ namespace IsoTpLibrary
 
         public IsoTpReturnCode SendConsecutiveFrame()
         {
+            int pciLen = 1;
+            int remainingDataLen = link.SendSize - link.SendOffset;
 
-            IsoTpConsecutiveFrame consecutiveFrame = new IsoTpConsecutiveFrame();
-            IsoTpDataArray data = new IsoTpDataArray();
-            ushort dataLength;
-            /* multi frame message length must greater than 7  */
-            consecutiveFrame.Type = (byte)IsoTpPCIType.CONSECUTIVE_FRAME;
-            consecutiveFrame.SN = link.SendSn;
-            dataLength = Convert.ToUInt16(link.SendSize - link.SendOffset);
-            consecutiveFrame.Data = new byte[7];
+            // 计算当前这一帧需要打包的实际总长度（1字节PCI + 剩余数据）
+            int requiredFrameLen = remainingDataLen + pciLen;
 
-            if (dataLength > consecutiveFrame.Data.Length) {
-                dataLength = Convert.ToUInt16(consecutiveFrame.Data.Length);
+            // 限制单帧不能超过通信通道配置的 TX_DL 限制
+            if (requiredFrameLen > link.TxDl)
+            {
+                requiredFrameLen = link.TxDl;
             }
 
-            Array.Copy(link.SendBuffer,link.SendOffset, consecutiveFrame.Data,0 ,dataLength);
-            data.Elems = StructMapping.StructToBytes(consecutiveFrame);
+            // 映射为底层 CAN FD 硬件支持的离散填充长度
+            int totalFrameLen = GetCanFdDlcLength(requiredFrameLen);
+            byte[] txBuf = CreatePaddedBuffer(totalFrameLen);
 
+            // 组连续帧 PCI
+            txBuf[0] = (byte)(((byte)IsoTpPCIType.CONSECUTIVE_FRAME << 4) | (link.SendSn & 0x0F));
 
-            /* send message */
-            bool isSend = SendCan(link.SendArbitrationId,Channel, data.Elems);
-
-            if (isSend == true)
+            int actualPayloadCopyLen = totalFrameLen - pciLen;
+            if (actualPayloadCopyLen > remainingDataLen)
             {
-                link.SendOffset += dataLength;
+                actualPayloadCopyLen = remainingDataLen;
+            }
+
+            Array.Copy(link.SendBuffer, link.SendOffset, txBuf, pciLen, actualPayloadCopyLen);
+
+            bool isSend = SendCan(link.SendArbitrationId, Channel, txBuf);
+            if (isSend)
+            {
+                link.SendOffset += (ushort)actualPayloadCopyLen;
                 if (++(link.SendSn) > 0x0F)
                 {
                     link.SendSn = 0;
@@ -146,79 +189,178 @@ namespace IsoTpLibrary
             return isSend ? IsoTpReturnCode.OK : IsoTpReturnCode.ERROR;
         }
 
-        public IsoTpReturnCode ReceiveSingleFrame(IsoTpSingleFrame singleFrame,byte len)
+        public void OnCanMessage(byte[] data, byte len)
         {
-            if((singleFrame.SF_DL == 0) || (singleFrame.SF_DL > len - 1))
-            {
-                Console.WriteLine("Single-frame length too small.");
-                return IsoTpReturnCode.LENGTH;
-            }
-            Array.Copy(singleFrame.Data, link.ReceiveBuffer,  singleFrame.SF_DL);
-            link.ReceiveSize = singleFrame.SF_DL;
-            return IsoTpReturnCode.OK;
-        }
+            if (len < 1 || len > 64) return;
 
-        public IsoTpReturnCode ReceiveFirstFrame(IsoTpFirstFrame firstFrame, byte len)
-        {
-            ushort payloadLength;
-            if(len != 8 && len != 12 && len != 16 && len != 20 && len != 24 && len != 32 && len != 48 && len != 64)
-            {
-                Console.WriteLine("First frame should be 8 bytes in length.");
-                return IsoTpReturnCode.LENGTH;
-            }
-            payloadLength = firstFrame.FF_DL_high;
-            payloadLength = Convert.ToUInt16((payloadLength << 8) + firstFrame.FF_DL_low);
-            if(payloadLength <= 7)
-            {
-                Console.WriteLine("Should not use multiple frame transmission.");
-                return IsoTpReturnCode.LENGTH;
-            }
-            if (payloadLength > link.ReceiveBufSize)
-            {
-                Console.WriteLine("Multi-frame response too large for receiving buffer.");
-                return IsoTpReturnCode.OVERFLOW;
-            }
-            Array.Copy(firstFrame.Data, link.ReceiveBuffer,  firstFrame.Data.Length);
-            link.ReceiveSize = payloadLength;
-            link.ReceiveOffset = Convert.ToUInt16(firstFrame.Data.Length);
-            link.ReceiveSn = 1;
-            return IsoTpReturnCode.OK;
-        }
+            byte pciType = (byte)((data[0] & 0xF0) >> 4);
 
-        public IsoTpReturnCode ReceiveConsecutiveFrame(IsoTpConsecutiveFrame consecutiveFrame, byte len)
-        {
-            ushort remainingBytes;
-            if(link.ReceiveSn != consecutiveFrame.SN)
+            switch (pciType)
             {
-                return IsoTpReturnCode.WRONG_SN;
-            }
-            remainingBytes = Convert.ToUInt16(link.ReceiveSize - link.ReceiveOffset);
-            if(remainingBytes > consecutiveFrame.Data.Length)
-            {
-                remainingBytes = Convert.ToUInt16(consecutiveFrame.Data.Length);
-            }
-            if(remainingBytes > len - 1)
-            {
-                Console.WriteLine("Consecutive frame too short.");
-                return IsoTpReturnCode.LENGTH;
-            }
-            Array.Copy(consecutiveFrame.Data, 0, link.ReceiveBuffer,link.ReceiveOffset ,remainingBytes);
-            link.ReceiveOffset += remainingBytes;
-            if(++(link.ReceiveSn) > 0x0F)
-            {
-                link.ReceiveSn = 0;
-            }
-            return IsoTpReturnCode.OK;
-        }
+                case (byte)IsoTpPCIType.SINGLE:
+                    int sfDl = data[0] & 0x0F;
+                    int sfDataOffset = 1;
 
-        public IsoTpReturnCode ReceiveFlowControl(IsoTpFlowControlFrame flowControl, byte len)
-        {
-            if(len < 3)
-            {
-                Console.WriteLine("Flow control frame too short.");
-                return IsoTpReturnCode.LENGTH;
+                    // 大厂对 CAN FD 单帧的长度解析逻辑
+                    if (sfDl == 0)
+                    {
+                        if (len < 2) return;
+                        sfDl = data[1]; // 2字节PCI，第2字节为长度
+                        sfDataOffset = 2;
+                    }
+
+                    if (sfDl == 0 || sfDl > (len - sfDataOffset))
+                    {
+                        Console.WriteLine("Single-frame length error.");
+                        return;
+                    }
+
+                    if (link.ReceiveStatus == IsoTpReceiveStatus.InProgress)
+                    {
+                        link.ReceiveProtocolResult = IsoTpProtocolResult.UNEXP_PDU;
+                    }
+                    else
+                    {
+                        link.ReceiveProtocolResult = IsoTpProtocolResult.OK;
+                    }
+
+                    Array.Copy(data, sfDataOffset, link.ReceiveBuffer, 0, sfDl);
+                    link.ReceiveSize = (ushort)sfDl;
+                    link.ReceiveStatus = IsoTpReceiveStatus.Full;
+                    break;
+
+                case (byte)IsoTpPCIType.FIRST_FRAME:
+                    int ffDl = (data[0] & 0x0F) << 8 | data[1];
+                    int ffDataOffset = 2;
+
+                    if (ffDl == 0) // 说明是长于 4095 字节的扩展首帧
+                    {
+                        if (len < 6) return;
+                        ffDl = (data[2] << 24) | (data[3] << 16) | (data[4] << 8) | data[5];
+                        ffDataOffset = 6;
+                    }
+
+                    // 效仿大厂对接收流控前的环境进行极限判断
+                    int currentFfPayloadLen = len - ffDataOffset;
+                    if (ffDl <= currentFfPayloadLen)
+                    {
+                        Console.WriteLine("Should not use multiple frame transmission.");
+                        return;
+                    }
+                    if (ffDl > link.ReceiveBufSize)
+                    {
+                        Console.WriteLine("Multi-frame response too large.");
+                        link.ReceiveProtocolResult = IsoTpProtocolResult.BUFFER_OVFLW;
+                        link.ReceiveStatus = IsoTpReceiveStatus.Idle;
+                        SendFlowControl(IsoTpPCIFlowStatus.OVERFLOW, 0, 0);
+                        break;
+                    }
+
+                    if (link.ReceiveStatus == IsoTpReceiveStatus.InProgress)
+                    {
+                        link.ReceiveProtocolResult = IsoTpProtocolResult.UNEXP_PDU;
+                    }
+                    else
+                    {
+                        link.ReceiveProtocolResult = IsoTpProtocolResult.OK;
+                    }
+
+                    Array.Copy(data, ffDataOffset, link.ReceiveBuffer, 0, currentFfPayloadLen);
+                    link.ReceiveSize = (ushort)ffDl;
+                    link.ReceiveOffset = (ushort)currentFfPayloadLen;
+                    link.ReceiveSn = 1;
+
+                    link.ReceiveStatus = IsoTpReceiveStatus.InProgress;
+                    link.ReceiveBsCount = IsoTpConfig.DefaultBlockSize;
+                    SendFlowControl(IsoTpPCIFlowStatus.CONTINUE, link.ReceiveBsCount, IsoTpConfig.DefaultStMin);
+                    link.ReceiveTimerCr = isotp_user_get_ms() + IsoTpConfig.DefaultResponseTimeout;
+                    break;
+
+                case (byte)IsoTpPCIType.CONSECUTIVE_FRAME:
+                    if (link.ReceiveStatus != IsoTpReceiveStatus.InProgress)
+                    {
+                        link.ReceiveProtocolResult = IsoTpProtocolResult.UNEXP_PDU;
+                        break;
+                    }
+
+                    byte sn = (byte)(data[0] & 0x0F);
+                    if (link.ReceiveSn != sn)
+                    {
+                        link.ReceiveProtocolResult = IsoTpProtocolResult.WRONG_SN;
+                        link.ReceiveStatus = IsoTpReceiveStatus.Idle;
+                        break;
+                    }
+
+                    int cfPayloadLen = len - 1; // 除去 1 字节 PCI 的可用有效硬件长度
+                    int remainingBytes = link.ReceiveSize - link.ReceiveOffset;
+
+                    // 裁剪防止溢出
+                    if (cfPayloadLen > remainingBytes)
+                    {
+                        cfPayloadLen = remainingBytes;
+                    }
+
+                    Array.Copy(data, 1, link.ReceiveBuffer, link.ReceiveOffset, cfPayloadLen);
+                    link.ReceiveOffset += (ushort)cfPayloadLen;
+
+                    if (++(link.ReceiveSn) > 0x0F)
+                    {
+                        link.ReceiveSn = 0;
+                    }
+
+                    if (link.ReceiveOffset >= link.ReceiveSize)
+                    {
+                        link.ReceiveStatus = IsoTpReceiveStatus.Full;
+                    }
+                    else
+                    {
+                        link.ReceiveTimerCr = isotp_user_get_ms() + IsoTpConfig.DefaultResponseTimeout;
+                        if (--link.ReceiveBsCount == 0)
+                        {
+                            link.ReceiveBsCount = IsoTpConfig.DefaultBlockSize;
+                            SendFlowControl(IsoTpPCIFlowStatus.CONTINUE, link.ReceiveBsCount, IsoTpConfig.DefaultStMin);
+                        }
+                    }
+                    break;
+
+                case (byte)IsoTpPCIType.FLOW_CONTROL_FRAME:
+                    if (link.SendStatus != IsoTpSendStatus.InProgress) break;
+
+                    byte fs = (byte)(data[0] & 0x0F);
+                    byte bs = data[1];
+                    byte stMin = data[2];
+
+                    link.SendTimerBs = isotp_user_get_ms() + IsoTpConfig.DefaultResponseTimeout;
+
+                    if (fs == (byte)IsoTpPCIFlowStatus.OVERFLOW)
+                    {
+                        link.SendProtocolResult = IsoTpProtocolResult.BUFFER_OVFLW;
+                        link.SendStatus = IsoTpSendStatus.Error;
+                    }
+                    else if (fs == (byte)IsoTpPCIFlowStatus.WAIT)
+                    {
+                        link.SendWtfCount += 1;
+                        if (link.SendWtfCount > IsoTpConfig.MaxWftNumber)
+                        {
+                            link.SendProtocolResult = IsoTpProtocolResult.WFT_OVRN;
+                            link.SendStatus = IsoTpSendStatus.Error;
+                        }
+                    }
+                    else if (fs == (byte)IsoTpPCIFlowStatus.CONTINUE)
+                    {
+                        link.SendBsRemain = (bs == 0) ? InvalidBs : bs;
+                        link.SendStMin = isotp_st_min_to_ms(stMin);
+                        link.SendWtfCount = 0;
+
+                        // 核心机制演进：根据接收方流控帧发过来的硬件数据真实长度 len，自动动态降级/更新发送端的 TxDl
+                        // 确保发送的 CF 长度不会撑死物理硬件接收能力较弱的下游 ECU
+                        if (len < link.TxDl)
+                        {
+                            link.TxDl = len;
+                        }
+                    }
+                    break;
             }
-            return IsoTpReturnCode.OK;
         }
 
         public IsoTpReturnCode Send(byte[] payload, ushort size)
@@ -229,26 +371,18 @@ namespace IsoTpLibrary
         public IsoTpReturnCode SendWithId(uint id, byte[] payload, ushort size)
         {
             IsoTpReturnCode ret;
-            if(link == null)
-            {
-                Console.WriteLine("Link is null!");
-                return IsoTpReturnCode.ERROR;
-            }
-            if(size > link.SendBufSize)
-            {
-                Console.WriteLine("Message size too large. Increase ISO_TP_MAX_MESSAGE_SIZE to set a larger buffer");
-                Console.WriteLine($"Attempted to send {size} bytes; max size is {link.SendBufSize}!\n");
-                return IsoTpReturnCode.OVERFLOW;
-            }
-            if(link.SendStatus == IsoTpSendStatus.InProgress)
-            {
-                Console.WriteLine("Abort previous message, transmission in progress.");
-                return IsoTpReturnCode.INPROGRESS;
-            }
+            if (link == null) return IsoTpReturnCode.ERROR;
+            if (size > link.SendBufSize) return IsoTpReturnCode.OVERFLOW;
+            if (link.SendStatus == IsoTpSendStatus.InProgress) return IsoTpReturnCode.INPROGRESS;
+
             link.SendSize = size;
             link.SendOffset = 0;
             Array.Copy(payload, link.SendBuffer, size);
-            if(link.SendSize < 8)
+
+            // 【大厂核心解耦判断】：当前能够容纳的最大单帧空间
+            int maxSingleFramePayload = (link.TxDl > 8) ? (link.TxDl - 2) : 7;
+
+            if (link.SendSize <= maxSingleFramePayload)
             {
                 ret = SendSingleFrame(id);
             }
@@ -256,7 +390,8 @@ namespace IsoTpLibrary
             {
                 ret = SendFirstFrame(id);
             }
-            if(ret == IsoTpReturnCode.OK)
+
+            if (ret == IsoTpReturnCode.OK)
             {
                 link.SendBsRemain = 0;
                 link.SendStMin = 0;
@@ -269,191 +404,18 @@ namespace IsoTpLibrary
             return ret;
         }
 
-        public void OnCanMessage(byte[] data,byte len)
+        public IsoTpReturnCode Receive(byte[] payload, ushort payloadSize, ref ushort outSize)
         {
-            IsoTpPciType pciType;
-            IsoTpDataArray dataArray;
-            IsoTpReturnCode ret;
-            if(len < 2 || len > 64)
-            {
-                return;
-            }
-            pciType = StructMapping.BytesToStruct<IsoTpPciType>(data);
-            dataArray.Elems = new byte[len];
-            Array.Copy(data, dataArray.Elems, len);
-            switch (pciType.Type)
-            {
-                case (byte)IsoTpPCIType.SINGLE:
-                    IsoTpSingleFrame singleFrame = new IsoTpSingleFrame();
-                    int dl = dataArray.Elems[0] & 0x0F;
-                    #region 长度大于8
-                    if (dl == 0)
-                    {
-                        singleFrame.SF_DL = dataArray.Elems[1];
-                        singleFrame.Data = new byte[singleFrame.SF_DL];
-                        Array.Copy(dataArray.Elems, 2, singleFrame.Data, 0, singleFrame.SF_DL);
-                    }
-                    #endregion
-
-                    #region 长度为8
-                    else
-                    {
-                        singleFrame = StructMapping.BytesToStruct<IsoTpSingleFrame>(dataArray.Elems);
-                    }
-                    if (link.ReceiveStatus == IsoTpReceiveStatus.InProgress)
-                    {
-                        link.ReceiveProtocolResult = IsoTpProtocolResult.UNEXP_PDU;
-                    }
-                    else
-                    {
-                        link.ReceiveProtocolResult = IsoTpProtocolResult.OK;
-                    }
-                    ret = ReceiveSingleFrame(singleFrame, len);
-                    if (ret == IsoTpReturnCode.OK)
-                    {
-                        link.ReceiveStatus = IsoTpReceiveStatus.Full;
-                    } 
-                    #endregion
-                    break;
-                case (byte)IsoTpPCIType.FIRST_FRAME:
-                    IsoTpFirstFrame firstFrame = StructMapping.BytesToStruct<IsoTpFirstFrame>(dataArray.Elems);
-                    #region 单帧长度大于8
-                    if (len > 8 && len <= 64)
-                    {
-                        int payloadLength = len - 2;
-                        firstFrame.Data = new byte[payloadLength];
-                        Array.Copy(dataArray.Elems, 2, firstFrame.Data, 0, payloadLength);
-                    }
-                    #endregion
-                    if (link.ReceiveStatus == IsoTpReceiveStatus.InProgress)
-                    {
-                        link.ReceiveProtocolResult = IsoTpProtocolResult.UNEXP_PDU;
-                    }
-                    else
-                    {
-                        link.ReceiveProtocolResult = IsoTpProtocolResult.OK;
-                    }
-                    ret = ReceiveFirstFrame(firstFrame, len);
-                    if(ret == IsoTpReturnCode.OVERFLOW)
-                    {
-                        link.ReceiveProtocolResult = IsoTpProtocolResult.BUFFER_OVFLW;
-                        link.ReceiveStatus = IsoTpReceiveStatus.Idle;
-                        SendFlowControl(IsoTpPCIFlowStatus.OVERFLOW, 0, 0);
-                        break;
-                    }
-                    if(ret == IsoTpReturnCode.OK)
-                    {
-                        link.ReceiveStatus = IsoTpReceiveStatus.InProgress;
-                        link.ReceiveBsCount = IsoTpConfig.DefaultBlockSize;
-                        SendFlowControl(IsoTpPCIFlowStatus.CONTINUE, link.ReceiveBsCount, IsoTpConfig.DefaultStMin);
-                        link.ReceiveTimerCr = isotp_user_get_ms() + IsoTpConfig.DefaultResponseTimeout;
-                    }
-                    break;
-
-                case (byte)IsoTpPCIType.CONSECUTIVE_FRAME:
-                    IsoTpConsecutiveFrame consecutiveFrame = StructMapping.BytesToStruct<IsoTpConsecutiveFrame>(dataArray.Elems);
-                    #region 单帧长度大于8
-                    if (len > 8 && len <= 64)
-                    {
-                        consecutiveFrame = StructMapping.BytesToStruct<IsoTpConsecutiveFrame>(dataArray.Elems);
-                        int payloadLength = len - 1;
-                        consecutiveFrame.Data = new byte[payloadLength];
-                        Array.Copy(dataArray.Elems, 1, consecutiveFrame.Data, 0, payloadLength);
-                    }
-                    #endregion
-
-                    if (link.ReceiveStatus != IsoTpReceiveStatus.InProgress)
-                    {
-                        link.ReceiveProtocolResult = IsoTpProtocolResult.UNEXP_PDU;
-                        break;
-                    }
-                    ret = ReceiveConsecutiveFrame(consecutiveFrame, len);
-                    if(ret == IsoTpReturnCode.WRONG_SN)
-                    {
-                        link.ReceiveProtocolResult = IsoTpProtocolResult.WRONG_SN;
-                        link.ReceiveStatus = IsoTpReceiveStatus.Idle;
-                        break;
-                    }
-                    if(ret == IsoTpReturnCode.OK)
-                    {
-                        link.ReceiveTimerCr = isotp_user_get_ms() + IsoTpConfig.DefaultResponseTimeout;
-                        if(link.ReceiveOffset >= link.ReceiveSize)
-                        {
-                            link.ReceiveStatus = IsoTpReceiveStatus.Full;
-                        }
-                        else
-                        {
-                            if(--link.ReceiveBsCount == 0)
-                            {
-                                link.ReceiveBsCount= IsoTpConfig.DefaultBlockSize;
-                                SendFlowControl(IsoTpPCIFlowStatus.CONTINUE, link.ReceiveBsCount, IsoTpConfig.DefaultStMin);
-                            }
-                        }
-                    }
-                    break;
-                case (byte)IsoTpPCIType.FLOW_CONTROL_FRAME:
-                    IsoTpFlowControlFrame flowControlFrame = StructMapping.BytesToStruct<IsoTpFlowControlFrame>(dataArray.Elems);
-                    if(link.SendStatus != IsoTpSendStatus.InProgress)
-                    {
-                        break;
-                    }
-                    ret = ReceiveFlowControl(flowControlFrame, len);
-                    if(ret == IsoTpReturnCode.OK)
-                    {
-                        link.SendTimerBs = isotp_user_get_ms() + IsoTpConfig.DefaultResponseTimeout;
-                        if(flowControlFrame.FS == (byte)IsoTpPCIFlowStatus.OVERFLOW)
-                        {
-                            link.SendProtocolResult = IsoTpProtocolResult.BUFFER_OVFLW;
-                            link.SendStatus = IsoTpSendStatus.Error;
-                        }
-                        else if(flowControlFrame.FS == (byte)IsoTpPCIFlowStatus.WAIT)
-                        {
-                            link.SendWtfCount += 1;
-                            if(link.SendWtfCount > IsoTpConfig.MaxWftNumber)
-                            {
-                                link.SendProtocolResult = IsoTpProtocolResult.WFT_OVRN;
-                                link.SendStatus = IsoTpSendStatus.Error;
-                            }
-                        }
-                        else if(flowControlFrame.FS == (byte)IsoTpPCIFlowStatus.CONTINUE)
-                        {
-                            if(flowControlFrame.BS == 0)
-                            {
-                                link.SendBsRemain = InvalidBs;
-                            }
-                            else
-                            {
-                                link.SendBsRemain = flowControlFrame.BS;
-                            }
-                            link.SendStMin = isotp_st_min_to_ms(flowControlFrame.STmin);
-                            link.SendWtfCount = 0;
-                        }
-                    }
-                    break;
-                default:
-                    break;
-            }
-        }
-
-        public IsoTpReturnCode Receive(byte[] payload,ushort payloadSize,ref ushort outSize)
-        {
-            ushort copylen;
-            if(link.ReceiveStatus != IsoTpReceiveStatus.Full)
-            {
-                return IsoTpReturnCode.NO_DATA;
-            }
-            copylen = link.ReceiveSize;
-            if(copylen > payloadSize)
-            {
-                copylen = payloadSize;
-            }
+            if (link.ReceiveStatus != IsoTpReceiveStatus.Full) return IsoTpReturnCode.NO_DATA;
+            ushort copylen = link.ReceiveSize;
+            if (copylen > payloadSize) copylen = payloadSize;
             Array.Copy(link.ReceiveBuffer, payload, copylen);
             outSize = copylen;
             link.ReceiveStatus = IsoTpReceiveStatus.Idle;
             return IsoTpReturnCode.OK;
         }
 
-        public void InitLink(uint sendId, byte[] sendbuf,ushort sendbufSize, byte[] recvbuf,ushort recvbufSize)
+        public void InitLink(uint sendId, byte[] sendbuf, ushort sendbufSize, byte[] recvbuf, ushort recvbufSize)
         {
             link.SendArbitrationId = sendId;
             link.SendBuffer = sendbuf;
@@ -462,7 +424,6 @@ namespace IsoTpLibrary
             link.SendBufSize = sendbufSize;
             link.ReceiveBufSize = recvbufSize;
             link.ReceiveBuffer = recvbuf;
-
             link.SendSize = 0;
             link.SendOffset = 0;
             link.SendSn = 0;
@@ -479,43 +440,42 @@ namespace IsoTpLibrary
             link.ReceiveBsCount = 0;
             link.ReceiveTimerCr = 0;
             link.ReceiveProtocolResult = IsoTpProtocolResult.OK;
+
+            // 默认设置为经典 8 字节链路环境，可在初始化后外部变更为 64
+            link.TxDl = 8;
+            link.PaddingEnable = true;
+            link.PaddingByte = 0xCC;
         }
 
         public void Poll()
         {
             IsoTpReturnCode ret;
-            if(link.SendStatus == IsoTpSendStatus.InProgress)
+            if (link.SendStatus == IsoTpSendStatus.InProgress)
             {
-                if((link.SendBsRemain == InvalidBs || link.SendBsRemain > 0)
+                if ((link.SendBsRemain == InvalidBs || link.SendBsRemain > 0)
                     && (link.SendStMin == 0 || (0 != link.SendStMin && IsoTpTimeAfter(isotp_user_get_ms(), link.SendTimerSt))))
                 {
                     ret = SendConsecutiveFrame();
-                    if(ret == IsoTpReturnCode.OK)
+                    if (ret == IsoTpReturnCode.OK)
                     {
-                        if(link.SendBsRemain != InvalidBs)
-                        {
-                            link.SendBsRemain -= 1;
-                        }
+                        if (link.SendBsRemain != InvalidBs) link.SendBsRemain -= 1;
                         link.SendTimerBs = isotp_user_get_ms() + IsoTpConfig.DefaultResponseTimeout;
                         link.SendTimerSt = isotp_user_get_ms() + link.SendStMin;
 
-                        if(link.SendOffset >= link.SendSize)
-                        {
-                            link.SendStatus = IsoTpSendStatus.Idle;
-                        }
+                        if (link.SendOffset >= link.SendSize) link.SendStatus = IsoTpSendStatus.Idle;
                     }
                     else
                     {
                         link.SendStatus = IsoTpSendStatus.Error;
                     }
                 }
-                if(IsoTpTimeAfter(isotp_user_get_ms(), link.SendTimerBs))
+                if (IsoTpTimeAfter(isotp_user_get_ms(), link.SendTimerBs))
                 {
                     link.SendProtocolResult = IsoTpProtocolResult.TIMEOUT_BS;
                     link.SendStatus = IsoTpSendStatus.Error;
                 }
             }
-            if(link.ReceiveStatus == IsoTpReceiveStatus.InProgress)
+            if (link.ReceiveStatus == IsoTpReceiveStatus.InProgress)
             {
                 if (IsoTpTimeAfter(isotp_user_get_ms(), link.ReceiveTimerCr))
                 {
@@ -525,53 +485,40 @@ namespace IsoTpLibrary
             }
         }
 
-        private uint isotp_user_get_ms()
-        {
-            return (uint)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() % uint.MaxValue);
-        }
-        //private bool SendCan(uint arbitrationId, byte[] elems)
-        //{
-        //    bool isSuccess = can.Send(arbitrationId, Channel, elems);
-        //    if (isSuccess)
-        //    {
-        //        Console.WriteLine($"{DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff")} " +
-        //            $"CanId:{arbitrationId.ToString("X")}发送:{BitConverter.ToString(elems)}");
-        //    }
-        //    else
-        //    {
-        //        Console.WriteLine($"{DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff")} "
-        //            + $"CanId:{arbitrationId}发送失败");
-        //    }
-        //    return isSuccess;
-        //}
+        private uint isotp_user_get_ms() => (uint)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() % uint.MaxValue);
     }
 
     public class IsoTpLink
     {
+        // === 效仿 Vector 体系增加的配置项 ===
+        public int TxDl { get; set; } = 8;          // 通道的发送数据长度上限 (8, 12, 16, 20, 24, 32, 48, 64)
+        public bool PaddingEnable { get; set; } = true; // 是否开启填充机制
+        public byte PaddingByte { get; set; } = 0xCC;  // 默认填充字节
+
         // Sender parameters
-        public uint SendArbitrationId { get; set; } // used to reply consecutive frame
-        public byte[] SendBuffer { get; set; } // message buffer
+        public uint SendArbitrationId { get; set; }
+        public byte[] SendBuffer { get; set; }
         public ushort SendBufSize { get; set; }
         public ushort SendSize { get; set; }
         public ushort SendOffset { get; set; }
         public byte SendSn { get; set; }
-        public ushort SendBsRemain { get; set; } // Remaining block size
-        public byte SendStMin { get; set; } // Separation Time between consecutive frames, unit millis
-        public byte SendWtfCount { get; set; } // Maximum number of FC.Wait frame transmissions
-        public uint SendTimerSt { get; set; } // Last time send consecutive frame
-        public uint SendTimerBs { get; set; } // Time until reception of the next FlowControl N_PDU
+        public ushort SendBsRemain { get; set; }
+        public byte SendStMin { get; set; }
+        public byte SendWtfCount { get; set; }
+        public uint SendTimerSt { get; set; }
+        public uint SendTimerBs { get; set; }
         public IsoTpProtocolResult SendProtocolResult { get; set; }
         public IsoTpSendStatus SendStatus { get; set; }
 
         // Receiver parameters
         public uint ReceiveArbitrationId { get; set; }
-        public byte[] ReceiveBuffer { get; set; } // message buffer
+        public byte[] ReceiveBuffer { get; set; }
         public ushort ReceiveBufSize { get; set; }
         public ushort ReceiveSize { get; set; }
         public ushort ReceiveOffset { get; set; }
         public byte ReceiveSn { get; set; }
-        public byte ReceiveBsCount { get; set; } // Maximum number of FC.Wait frame transmissions
-        public uint ReceiveTimerCr { get; set; } // Time until transmission of the next ConsecutiveFrame N_PDU
+        public byte ReceiveBsCount { get; set; }
+        public uint ReceiveTimerCr { get; set; }
         public IsoTpProtocolResult ReceiveProtocolResult { get; set; }
         public IsoTpReceiveStatus ReceiveStatus { get; set; }
     }
