@@ -23,7 +23,7 @@ namespace IsoTpLibrary
 
         // Default timeout to use when waiting for a response during a
         // multi-frame send or receive.
-        public const int DefaultResponseTimeout = 100;
+        public const int DefaultResponseTimeout = 1000;
 
         // Determines if by default, padding is added to ISO-TP message frames.
         public const bool FramePadding = true; // Set to true or false based on your requirement
