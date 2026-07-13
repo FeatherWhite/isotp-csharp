@@ -19,12 +19,13 @@ namespace IsoTpLibrary
         LENGTH = -7
     }
 
-    // ISOTP sender status
     public enum IsoTpSendStatus
     {
-        Idle,               // ISOTP_SEND_STATUS_IDLE
-        InProgress,         // ISOTP_SEND_STATUS_INPROGRESS
-        Error               // ISOTP_SEND_STATUS_ERROR
+        Idle,
+        WaitFlowControl, // 新增：发送完首帧后，等待接收端的流控帧（FC）
+        WaitSendOk,      // 新增：收到流控帧后，正在按 STmin 间隔发送连续帧（CF）
+        InProgress,      // 兼容/保留（也可以选择弃用它，直接用上面两个）
+        Error
     }
 
     // ISOTP receiver status
