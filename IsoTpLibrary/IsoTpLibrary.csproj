@@ -89,6 +89,7 @@
     <Compile Include="IsoTp.cs" />
     <Compile Include="IsoTpConfig.cs" />
     <Compile Include="IsoTpDefines.cs" />
+    <Compile Include="IsoTp_V2.cs" />
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="StructMapping.cs" />
