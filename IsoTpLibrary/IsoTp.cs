@@ -5,6 +5,8 @@ using System.Reflection.Emit;
 using System.Text;
 using System.Threading.Tasks;
 using ZLG.CAN;
+using System.Diagnostics;
+
 
 namespace IsoTpLibrary
 {
@@ -21,7 +23,13 @@ namespace IsoTpLibrary
         public uint Channel { get; set; } = 0;
 
         /// <summary>
-        /// 【修复时序隐患】：利用 C# 有符号整型溢出特性，完美解决 uint 49天/取模回绕下的时间比较逻辑
+        /// 高精度计时：使用 Stopwatch 替代 DateTimeOffset (解决 Windows 15.6ms 时钟精度瓶颈)
+        /// </summary>
+        private static readonly Stopwatch _sysSw = Stopwatch.StartNew();
+        private uint isotp_user_get_ms() => (uint)_sysSw.ElapsedMilliseconds;
+
+        /// <summary>
+        /// 利用 C# 有符号整型溢出特性，解决 uint 49天/取模回绕下的时间比较逻辑
         /// </summary>
         private bool IsoTpTimeAfter(uint a, uint b) => ((int)(a - b)) > 0;
 
@@ -31,12 +39,9 @@ namespace IsoTpLibrary
         {
             if (st_min >= 0xF1 && st_min <= 0xF9) return 1;
             if (st_min <= 0x7F) return st_min;
-            return 0;
+            return 0; // 0x80-0xF0 预留域，默认按 0ms 快速处理
         }
 
-        /// <summary>
-        /// 将所需的有效载荷长度，映射为 CAN FD 硬件允许的离散 DLC 长度
-        /// </summary>
         private int GetCanFdDlcLength(int requiredSize)
         {
             if (requiredSize <= 8) return 8;
@@ -49,9 +54,6 @@ namespace IsoTpLibrary
             return 64;
         }
 
-        /// <summary>
-        /// 创建带有固定填充字节的数组
-        /// </summary>
         private byte[] CreatePaddedBuffer(int length)
         {
             byte[] buf = new byte[length];
@@ -202,7 +204,7 @@ namespace IsoTpLibrary
 
                     if (sfDl == 0 || sfDl > (len - sfDataOffset))
                     {
-                        Console.WriteLine("Single-frame length error.");
+                        //Console.WriteLine("Single-frame length error.");
                         return;
                     }
 
@@ -234,12 +236,12 @@ namespace IsoTpLibrary
                     int currentFfPayloadLen = len - ffDataOffset;
                     if (ffDl <= currentFfPayloadLen)
                     {
-                        Console.WriteLine("Should not use multiple frame transmission.");
+                        //Console.WriteLine("Should not use multiple frame transmission.");
                         return;
                     }
                     if (ffDl > link.ReceiveBufSize)
                     {
-                        Console.WriteLine("Multi-frame response too large.");
+                        //Console.WriteLine("Multi-frame response too large.");
                         link.ReceiveProtocolResult = IsoTpProtocolResult.BUFFER_OVFLW;
                         link.ReceiveStatus = IsoTpReceiveStatus.Idle;
                         SendFlowControl(IsoTpPCIFlowStatus.OVERFLOW, 0, 0);
@@ -313,7 +315,6 @@ namespace IsoTpLibrary
                     break;
 
                 case (byte)IsoTpPCIType.FLOW_CONTROL_FRAME:
-                    // 🚨 允许在 WaitFlowControl 状态下接收流控帧
                     if (link.SendStatus != IsoTpSendStatus.WaitFlowControl) break;
 
                     byte fs = (byte)(data[0] & 0x0F);
@@ -337,7 +338,6 @@ namespace IsoTpLibrary
                         }
                         else
                         {
-                            // 保持在 WaitFlowControl 状态，重置 N_Bs 定时器
                             link.SendTimerBs = isotp_user_get_ms() + IsoTpConfig.DefaultResponseTimeout;
                         }
                     }
@@ -346,9 +346,10 @@ namespace IsoTpLibrary
                         link.SendBsRemain = (bs == 0) ? InvalidBs : bs;
                         link.SendStMin = isotp_st_min_to_ms(stMin);
                         link.SendWtfCount = 0;
-                        link.SendTimerSt = isotp_user_get_ms() + link.SendStMin;
 
-                        // 🚨 核心改动：收到 CTS (Continue To Send) 后，进入连续帧发送阶段
+                        // 🌟 收到 CTS 后立即触发发送，不需要额外的 STmin 等待时间
+                        link.SendTimerSt = isotp_user_get_ms();
+
                         link.SendStatus = IsoTpSendStatus.WaitSendOk;
                     }
                     break;
@@ -366,7 +367,6 @@ namespace IsoTpLibrary
             if (link == null) return IsoTpReturnCode.ERROR;
             if (size > link.SendBufSize) return IsoTpReturnCode.OVERFLOW;
 
-            // 🚨 这里的判断条件要加上新状态，防止发送过程中被重复触发
             if (link.SendStatus == IsoTpSendStatus.WaitFlowControl || link.SendStatus == IsoTpSendStatus.WaitSendOk)
                 return IsoTpReturnCode.INPROGRESS;
 
@@ -381,7 +381,7 @@ namespace IsoTpLibrary
                 ret = SendSingleFrame(id);
                 if (ret == IsoTpReturnCode.OK)
                 {
-                    link.SendStatus = IsoTpSendStatus.Idle; // 单帧发送完直接 Idle
+                    link.SendStatus = IsoTpSendStatus.Idle;
                 }
             }
             else
@@ -396,7 +396,6 @@ namespace IsoTpLibrary
                     link.SendTimerBs = isotp_user_get_ms() + IsoTpConfig.DefaultResponseTimeout;
                     link.SendProtocolResult = IsoTpProtocolResult.OK;
 
-                    // 🚨 核心改动：首帧发送成功后，状态切为【等待流控帧】
                     link.SendStatus = IsoTpSendStatus.WaitFlowControl;
                 }
             }
@@ -446,60 +445,76 @@ namespace IsoTpLibrary
         }
 
         /// <summary>
-        /// 【修复时序核心】：重构多帧循环轮询状态机
+        /// 🌟【高性能 Burst 优化版】多帧循环轮询状态机
         /// </summary>
         public void Poll()
         {
-            IsoTpReturnCode ret;
             uint current_ms = isotp_user_get_ms();
 
-            // 🌟【状态机修复】：支持 InProgress 或 WaitSendOk 状态，允许开始/继续驱动连续帧发送
+            // 1. 连续帧 Burst 冲刺发送逻辑
             if (link.SendStatus == IsoTpSendStatus.InProgress || link.SendStatus == IsoTpSendStatus.WaitSendOk)
             {
-                // 1. 检查数据是否全部交给了底层驱动
-                if (link.SendOffset >= link.SendSize)
+                // 循环冲刺，直到需要等待 STmin、等待 BlockSize 允许，或底层 SendCan 挂起/出错
+                while (link.SendStatus == IsoTpSendStatus.InProgress || link.SendStatus == IsoTpSendStatus.WaitSendOk)
                 {
-                    link.SendStatus = IsoTpSendStatus.Idle;
-                    return;
-                }
-
-                // 2. 判断是否允许发送下一个连续帧（BlockSize 剩余可用，且 STmin 延时已满）
-                if ((link.SendBsRemain == InvalidBs || link.SendBsRemain > 0)
-                    && (link.SendStMin == 0 || IsoTpTimeAfter(current_ms, link.SendTimerSt)))
-                {
-                    // 🌟 一旦开始发连续帧，确保进入发送进行中状态
-                    link.SendStatus = IsoTpSendStatus.InProgress;
-
-                    ret = SendConsecutiveFrame();
-                    if (ret == IsoTpReturnCode.OK)
+                    // 检查数据是否已全部压入硬件队列
+                    if (link.SendOffset >= link.SendSize)
                     {
-                        if (link.SendBsRemain != InvalidBs) link.SendBsRemain -= 1;
+                        link.SendStatus = IsoTpSendStatus.Idle;
+                        break;
+                    }
 
-                        // 刷新发送端相关定时时序
-                        link.SendTimerBs = current_ms + IsoTpConfig.DefaultResponseTimeout;
-                        link.SendTimerSt = current_ms + link.SendStMin;
+                    // 检查 BlockSize 和 STmin 时间条件
+                    bool bsValid = (link.SendBsRemain == InvalidBs || link.SendBsRemain > 0);
+                    bool stMinValid = (link.SendStMin == 0 || IsoTpTimeAfter(current_ms, link.SendTimerSt) || current_ms == link.SendTimerSt);
 
-                        // 🚨 最后一帧 CF 刚刚被调用的瞬间，不在本周期内切 Idle，由下一周期 Poll 收敛（给硬件腾出缓冲期）
-                        if (link.SendOffset >= link.SendSize)
+                    if (bsValid && stMinValid)
+                    {
+                        link.SendStatus = IsoTpSendStatus.InProgress;
+
+                        IsoTpReturnCode ret = SendConsecutiveFrame();
+                        if (ret == IsoTpReturnCode.OK)
                         {
-                            // 保持 InProgress，等待下一个周期的 Poll 顶部直接切为 Idle
+                            if (link.SendBsRemain != InvalidBs) link.SendBsRemain -= 1;
+
+                            // 刷新计时器
+                            link.SendTimerBs = current_ms + IsoTpConfig.DefaultResponseTimeout;
+                            link.SendTimerSt = current_ms + link.SendStMin;
+
+                            if (link.SendOffset >= link.SendSize)
+                            {
+                                link.SendStatus = IsoTpSendStatus.Idle;
+                                break;
+                            }
+
+                            // 💡 如果 STmin > 0，说明需要真实的毫秒延时，本次 Poll 的 Burst 发送暂停，等待下一次时钟到达
+                            if (link.SendStMin > 0)
+                            {
+                                break;
+                            }
+                        }
+                        else
+                        {
+                            link.SendStatus = IsoTpSendStatus.Error;
+                            break;
                         }
                     }
                     else
                     {
-                        link.SendStatus = IsoTpSendStatus.Error;
+                        // 条件不满足（等待 BlockSize 或 STmin 计时），退出 Burst 循环
+                        break;
                     }
                 }
 
-                // 3. 检查 ECU 回复流控帧或接受状态的超时限制（Bs 定时器检查）
-                if (IsoTpTimeAfter(current_ms, link.SendTimerBs))
+                // 检查 N_Bs 超时（等待流控帧或发送连续帧超时）
+                if (link.SendStatus != IsoTpSendStatus.Idle && IsoTpTimeAfter(current_ms, link.SendTimerBs))
                 {
                     link.SendProtocolResult = IsoTpProtocolResult.TIMEOUT_BS;
                     link.SendStatus = IsoTpSendStatus.Error;
                 }
             }
 
-            // 4. 接收阶段超时检查
+            // 2. 接收阶段超时检查
             if (link.ReceiveStatus == IsoTpReceiveStatus.InProgress)
             {
                 if (IsoTpTimeAfter(current_ms, link.ReceiveTimerCr))
@@ -509,9 +524,6 @@ namespace IsoTpLibrary
                 }
             }
         }
-
-        private uint isotp_user_get_ms() => (uint)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
-        // uint 自然截断，等价于 & 0xFFFFFFFF，与 IsoTpTimeAfter 的环绕比较兼容
     }
     public class IsoTpLink
     {
