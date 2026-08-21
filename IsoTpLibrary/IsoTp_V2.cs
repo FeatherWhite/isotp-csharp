@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Threading;
@@ -53,8 +54,13 @@ namespace UdsDiagnostic.IsoTp
 
         private TaskCompletionSource<byte[]>? _rxTcs;
         private TaskCompletionSource<bool>? _flowControlTcs;
+        private readonly object _rxSync = new object();
+        private readonly Queue<byte[]> _pendingRxPayloads = new Queue<byte[]>();
 
         private MemoryStream? _rxStream;
+        private CancellationTokenSource? _rxTimeoutCts;
+        private readonly SemaphoreSlim _sendGate = new SemaphoreSlim(1, 1);
+        private readonly SemaphoreSlim _receiveGate = new SemaphoreSlim(1, 1);
         private int _expectedRxSize;
         private byte _expectedSn;
 
@@ -65,6 +71,8 @@ namespace UdsDiagnostic.IsoTp
         {
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
             _config = config ?? throw new ArgumentNullException(nameof(config));
+            if (!IsValidTxDl(_config.TxDl)) throw new ArgumentOutOfRangeException(nameof(config.TxDl));
+            if (_config.TimeoutMs <= 0) throw new ArgumentOutOfRangeException(nameof(config.TimeoutMs));
 
             _transport.OnFrameReceived += HandleCanMessage;
         }
@@ -77,6 +85,9 @@ namespace UdsDiagnostic.IsoTp
         public async Task SendAsync(byte[] payload, CancellationToken cancellationToken = default)
         {
             if (payload == null || payload.Length == 0) return;
+            await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
 
             int maxSfLen = _config.TxDl > 8 ? _config.TxDl - 2 : 7;
 
@@ -157,6 +168,11 @@ namespace UdsDiagnostic.IsoTp
                     }
                 }
             }
+            }
+            finally
+            {
+                _sendGate.Release();
+            }
         }
 
         /// <summary>
@@ -164,14 +180,41 @@ namespace UdsDiagnostic.IsoTp
         /// </summary>
         public async Task<byte[]> ReceiveAsync(CancellationToken cancellationToken = default)
         {
-            _rxTcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+            await _receiveGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+            byte[] pendingPayload = null;
+            lock (_rxSync)
+            {
+                _rxTcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+                if (_pendingRxPayloads.Count > 0)
+                    pendingPayload = _pendingRxPayloads.Dequeue();
+            }
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             cts.CancelAfter(_config.TimeoutMs);
 
+            if (pendingPayload != null)
+                _rxTcs.TrySetResult(pendingPayload);
+
             using (cts.Token.Register(() => _rxTcs.TrySetCanceled()))
             {
-                return await _rxTcs.Task;
+                try
+                {
+                    return await _rxTcs.Task;
+                }
+                finally
+                {
+                    lock (_rxSync)
+                    {
+                        _rxTcs = null;
+                    }
+                }
+            }
+            }
+            finally
+            {
+                _receiveGate.Release();
             }
         }
 
@@ -217,16 +260,19 @@ namespace UdsDiagnostic.IsoTp
                 offset = 2;
             }
 
-            if (sfDl > data.Length - offset) return;
+            if (sfDl <= 0 || sfDl > data.Length - offset) return;
+            if (sfDl > _config.TxDl - offset) return;
 
             byte[] payload = new byte[sfDl];
             Array.Copy(data, offset, payload, 0, sfDl);
 
-            _rxTcs?.TrySetResult(payload);
+            CompleteReceivedPayload(payload);
         }
 
         private void HandleFirstFrame(byte[] data)
         {
+            if (data == null || data.Length < 2) return;
+
             int ffDl = ((data[0] & 0x0F) << 8) | data[1];
             int offset = 2;
 
@@ -237,13 +283,20 @@ namespace UdsDiagnostic.IsoTp
                 offset = 6;
             }
 
+            if (ffDl <= 0 || ffDl > 0x7FFFFFFF) return;
+            if (ffDl <= data.Length - offset) return;
+
+            _rxTimeoutCts?.Cancel();
+            _rxTimeoutCts?.Dispose();
+            _rxTimeoutCts = new CancellationTokenSource();
             _expectedRxSize = ffDl;
             _rxStream = new MemoryStream(_expectedRxSize);
 
-            int payloadLen = data.Length - offset;
+            int payloadLen = Math.Min(data.Length - offset, _expectedRxSize);
             _rxStream.Write(data, offset, payloadLen);
 
             _expectedSn = 1;
+            ArmReceiveTimeout();
 
             // 回复流控帧 (Flow Control)
             SendFlowControl(IsoTpFlowStatus.CONTINUE, _config.DefaultBlockSize, _config.DefaultStMin);
@@ -251,7 +304,7 @@ namespace UdsDiagnostic.IsoTp
 
         private void HandleConsecutiveFrame(byte[] data)
         {
-            if (_rxStream == null) return;
+            if (data == null || data.Length < 2 || _rxStream == null) return;
 
             byte sn = (byte)(data[0] & 0x0F);
             if (sn != _expectedSn)
@@ -270,26 +323,39 @@ namespace UdsDiagnostic.IsoTp
 
             if (_rxStream.Length >= _expectedRxSize)
             {
-                _rxTcs?.TrySetResult(_rxStream.ToArray());
+                _rxTimeoutCts?.Cancel();
+                CompleteReceivedPayload(_rxStream.ToArray());
                 _rxStream = null;
+            }
+            else
+            {
+                ArmReceiveTimeout();
             }
         }
 
         private void HandleFlowControlFrame(byte[] data)
         {
-            if (data.Length < 3) return;
+            if (data == null || data.Length < 3) return;
 
             byte fs = (byte)(data[0] & 0x0F);
+            if (fs > (byte)IsoTpFlowStatus.OVERFLOW) return;
+            if (_flowControlTcs == null) return;
+
             _remoteBs = data[1];
             _remoteStMin = data[2];
 
             if (fs == (byte)IsoTpFlowStatus.CONTINUE)
             {
-                _flowControlTcs?.TrySetResult(true);
+                _flowControlTcs.TrySetResult(true);
+            }
+            else if (fs == (byte)IsoTpFlowStatus.WAIT)
+            {
+                // WAIT is a valid ISO-TP response. Keep the existing N_Bs timeout
+                // active and wait for a subsequent CTS or OVERFLOW frame.
             }
             else if (fs == (byte)IsoTpFlowStatus.OVERFLOW)
             {
-                _flowControlTcs?.TrySetException(new OverflowException("接收端返回 FlowControl OVERFLOW 溢出错误。"));
+                _flowControlTcs.TrySetException(new OverflowException("接收端返回 FlowControl OVERFLOW 溢出错误。"));
             }
         }
 
@@ -305,13 +371,28 @@ namespace UdsDiagnostic.IsoTp
             _transport.SendCanFrame(_config.TxId, fcBuf);
         }
 
+        private void CompleteReceivedPayload(byte[] payload)
+        {
+            lock (_rxSync)
+            {
+                if (_rxTcs != null && !_rxTcs.Task.IsCompleted)
+                {
+                    _rxTcs.TrySetResult(payload);
+                }
+                else
+                {
+                    _pendingRxPayloads.Enqueue(payload);
+                }
+            }
+        }
+
         #endregion
 
         #region 辅助工具方法
 
         private byte[] BuildSingleFrame(byte[] payload)
         {
-            int pciLen = (_config.TxDl > 8 && payload.Length >= 7) ? 2 : 1;
+            int pciLen = (_config.TxDl > 8 && payload.Length > 7) ? 2 : 1;
             int totalLen = GetCanFdDlcLength(payload.Length + pciLen);
             if (totalLen > _config.TxDl) totalLen = _config.TxDl;
 
@@ -389,10 +470,37 @@ namespace UdsDiagnostic.IsoTp
             return 0;
         }
 
+        private bool IsValidTxDl(int txDl)
+        {
+            return txDl == 8 || txDl == 12 || txDl == 16 || txDl == 20 ||
+                   txDl == 24 || txDl == 32 || txDl == 48 || txDl == 64;
+        }
+
+        private void ArmReceiveTimeout()
+        {
+            _rxTimeoutCts?.Cancel();
+            _rxTimeoutCts?.Dispose();
+            _rxTimeoutCts = new CancellationTokenSource();
+            CancellationToken token = _rxTimeoutCts.Token;
+            Task.Delay(_config.TimeoutMs, token).ContinueWith(t =>
+            {
+                if (!t.IsCanceled && _rxStream != null)
+                {
+                    _rxStream.Dispose();
+                    _rxStream = null;
+                    _rxTcs?.TrySetException(new TimeoutException("ISO-TP Consecutive Frame 接收超时。"));
+                }
+            }, TaskScheduler.Default);
+        }
+
         public void Dispose()
         {
             _transport.OnFrameReceived -= HandleCanMessage;
+            _rxTimeoutCts?.Cancel();
+            _rxTimeoutCts?.Dispose();
             _rxStream?.Dispose();
+            _sendGate.Dispose();
+            _receiveGate.Dispose();
         }
 
         #endregion
